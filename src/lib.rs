@@ -1,25 +1,32 @@
 use std::{
     fmt::Debug,
+    mem::swap,
     ops::{Index, IndexMut},
     ptr::null_mut,
 };
 
 const INDEX_BOUNDS_ERROR: &str = "Index is out of bounds";
 
-#[inline(always)]
-fn xor_next_ptr<T>(
-    combined_xor_ptr: *mut XorNode<T>,
-    other_ptr: *mut XorNode<T>,
-) -> *mut XorNode<T> {
-    let combined_ptr_value = combined_xor_ptr as usize;
-    let other_ptr_value = other_ptr as usize;
-    let new_ptr_value = combined_ptr_value ^ other_ptr_value;
+/// performs XOR on 2 pointers and returns the resulting pointer
+#[inline]
+fn xor_ptrs<T>(first_ptr: *mut XorNode<T>, second_ptr: *mut XorNode<T>) -> *mut XorNode<T> {
+    let first_ptr_value = first_ptr as usize;
+    let second_ptr_value = second_ptr as usize;
+    let new_ptr_value = first_ptr_value ^ second_ptr_value;
     new_ptr_value as _
 }
 
 struct XorNode<T> {
     payload: T,
     xor_ptr: *mut XorNode<T>,
+}
+impl<T> XorNode<T> {
+    fn allocate(value: T) -> *mut Self {
+        Box::leak(Box::new(Self {
+            payload: value,
+            xor_ptr: null_mut(),
+        }))
+    }
 }
 
 /// linked list using single XOR pointer nodes
@@ -115,7 +122,7 @@ impl<T> XorLinkedList<T> {
         while jump_count > 0 {
             let new_ptr;
             unsafe {
-                new_ptr = xor_next_ptr((*current_ptr).xor_ptr, prev_ptr);
+                new_ptr = xor_ptrs((*current_ptr).xor_ptr, prev_ptr);
             }
             prev_ptr = current_ptr;
             current_ptr = new_ptr;
@@ -136,10 +143,7 @@ impl<T> XorLinkedList<T> {
     }
 
     unsafe fn push_end(end_ptr1: &mut *mut XorNode<T>, end_ptr2: &mut *mut XorNode<T>, value: T) {
-        let new_node = Box::leak(Box::new(XorNode {
-            payload: value,
-            xor_ptr: null_mut(),
-        }));
+        let new_node = XorNode::allocate(value);
 
         if end_ptr2.is_null() {
             debug_assert!(end_ptr1.is_null());
@@ -147,9 +151,9 @@ impl<T> XorLinkedList<T> {
             *end_ptr2 = new_node;
         } else {
             unsafe {
-                (**end_ptr2).xor_ptr = xor_next_ptr((**end_ptr2).xor_ptr, new_node);
+                (**end_ptr2).xor_ptr = xor_ptrs((**end_ptr2).xor_ptr, new_node);
+                (*new_node).xor_ptr = *end_ptr2;
             }
-            new_node.xor_ptr = *end_ptr2;
             *end_ptr2 = new_node
         }
     }
@@ -182,7 +186,7 @@ impl<T> XorLinkedList<T> {
                 *end_ptr2 = null_mut();
             } else {
                 *end_ptr1 = (**end_ptr1).xor_ptr;
-                (**end_ptr1).xor_ptr = xor_next_ptr((**end_ptr1).xor_ptr, old_ptr);
+                (**end_ptr1).xor_ptr = xor_ptrs((**end_ptr1).xor_ptr, old_ptr);
             }
             Some(Box::from_raw(old_ptr).payload)
         }
@@ -232,9 +236,80 @@ impl<T> XorLinkedList<T> {
 
     /// reverses the order of the list
     pub fn reverse(&mut self) {
-        let new_start = self.end;
-        self.end = self.start;
-        self.start = new_start;
+        swap(&mut self.start, &mut self.end);
+    }
+
+    /// returns a tuple of the pointers at index and index-1, where 0 < index < size-1
+    unsafe fn get_ptr_at_and_prev(&mut self, index: usize) -> (*mut XorNode<T>, *mut XorNode<T>) {
+        let mut prev_ptr = null_mut();
+        let is_backwards_iteration = index > self.size / 2;
+        let (mut current_ptr, mut jump_count) = if is_backwards_iteration {
+            (self.end, self.size - index)
+        } else {
+            (self.start, index)
+        };
+        while jump_count > 0 {
+            let new_ptr;
+            unsafe {
+                new_ptr = xor_ptrs((*current_ptr).xor_ptr, prev_ptr);
+            }
+            prev_ptr = current_ptr;
+            current_ptr = new_ptr;
+            jump_count -= 1;
+        }
+        // swap current and previous for backwards iteration (previous is after current)
+        if is_backwards_iteration {
+            swap(&mut current_ptr, &mut prev_ptr);
+        }
+
+        (current_ptr, prev_ptr)
+    }
+
+    /// inserts an element at the index
+    pub fn insert_at(&mut self, index: usize, value: T) {
+        assert!(index <= self.size);
+        if index == 0 {
+            self.push_front(value);
+        } else if index == self.size {
+            self.push_back(value);
+        } else {
+            unsafe {
+                let (current_ptr, prev_ptr) = self.get_ptr_at_and_prev(index);
+                (*current_ptr).xor_ptr = xor_ptrs((*current_ptr).xor_ptr, prev_ptr);
+                (*prev_ptr).xor_ptr = xor_ptrs((*prev_ptr).xor_ptr, current_ptr);
+
+                let new_node = XorNode::allocate(value);
+                (*new_node).xor_ptr = xor_ptrs(current_ptr, prev_ptr);
+
+                (*current_ptr).xor_ptr = xor_ptrs((*current_ptr).xor_ptr, new_node);
+                (*prev_ptr).xor_ptr = xor_ptrs((*prev_ptr).xor_ptr, new_node);
+            }
+            self.size += 1;
+        }
+    }
+
+    /// removes and returns the value at the index
+    pub fn remove_at(&mut self, index: usize) -> Option<T> {
+        if index >= self.size {
+            None
+        } else if index == 0 {
+            self.pop_front()
+        } else if index + 1 == self.size {
+            self.pop_back()
+        } else {
+            unsafe {
+                let (current_ptr, prev_ptr) = self.get_ptr_at_and_prev(index);
+                let next_ptr = xor_ptrs((*current_ptr).xor_ptr, prev_ptr);
+                (*next_ptr).xor_ptr = xor_ptrs((*next_ptr).xor_ptr, current_ptr);
+                (*prev_ptr).xor_ptr = xor_ptrs((*prev_ptr).xor_ptr, current_ptr);
+
+                (*next_ptr).xor_ptr = xor_ptrs((*next_ptr).xor_ptr, prev_ptr);
+                (*prev_ptr).xor_ptr = xor_ptrs((*prev_ptr).xor_ptr, next_ptr);
+                self.size -= 1;
+
+                Some(Box::from_raw(current_ptr).payload)
+            }
+        }
     }
 }
 impl<T> Extend<T> for XorLinkedList<T> {
@@ -351,7 +426,7 @@ impl<'a, T> Iterator for RefXorLinkedListIter<'a, T> {
         }
         unsafe {
             let payload_ref = &(*self.current_ptr).payload;
-            let new_ptr = xor_next_ptr((*self.current_ptr).xor_ptr, self.prev_ptr);
+            let new_ptr = xor_ptrs((*self.current_ptr).xor_ptr, self.prev_ptr);
             self.prev_ptr = self.current_ptr;
             self.current_ptr = new_ptr;
 
@@ -374,7 +449,7 @@ impl<'a, T> Iterator for MutRefXorLinkedListIter<'a, T> {
         }
         unsafe {
             let payload_ref = &mut (*self.current_ptr).payload;
-            let new_ptr = xor_next_ptr((*self.current_ptr).xor_ptr, self.prev_ptr);
+            let new_ptr = xor_ptrs((*self.current_ptr).xor_ptr, self.prev_ptr);
             self.prev_ptr = self.current_ptr;
             self.current_ptr = new_ptr;
 
@@ -703,5 +778,166 @@ mod tests {
         assert_eq!(3, list[0]);
         assert_eq!(2, list[1]);
         assert_eq!(1, list[2]);
+    }
+
+    #[test]
+    fn test_insert_at() {
+        let mut list: XorLinkedList<i32> = XorLinkedList::new();
+        list.insert_at(0, 4);
+        list.insert_at(0, 1);
+        list.insert_at(1, 2);
+        list.insert_at(2, 3);
+        list.insert_at(4, 7);
+        list.insert_at(4, 6);
+        list.insert_at(4, 5);
+
+        assert_eq!(7, list.len());
+        assert_eq!(1, list[0]);
+        assert_eq!(2, list[1]);
+        assert_eq!(3, list[2]);
+        assert_eq!(4, list[3]);
+        assert_eq!(5, list[4]);
+        assert_eq!(6, list[5]);
+        assert_eq!(7, list[6]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_insert_panic() {
+        let mut list: XorLinkedList<i32> = XorLinkedList::new();
+        list.insert_at(0, 1);
+        list.insert_at(3, 2);
+    }
+
+    #[test]
+    fn test_insert_at_many_near_back() {
+        let mut list = XorLinkedList::new();
+
+        for i in 0..10 {
+            list.push_back(i);
+        }
+
+        for i in 0..20 {
+            let idx = list.len() - 1;
+            list.insert_at(idx, 100 + i);
+        }
+
+        let collected: Vec<_> = list.into_iter().collect();
+
+        assert_eq!(collected.first(), Some(&0));
+        assert_eq!(collected.last(), Some(&9));
+        assert_eq!(collected.len(), 30);
+
+        let mut sorted = collected.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 30);
+    }
+
+    #[test]
+    fn test_insert_at_forward_backward_consistency() {
+        let mut list = XorLinkedList::new();
+
+        for i in 0..15 {
+            list.push_back(i);
+        }
+
+        let insert_positions = [7, 3, 10, 5, 12, 1, 8];
+        for (i, &pos) in insert_positions.iter().enumerate() {
+            list.insert_at(pos, 1000 + i);
+        }
+
+        let forward: Vec<_> = (&list).into_iter().cloned().collect();
+
+        let backward: Vec<_> = list.reverse_iter().cloned().collect();
+
+        let mut forward_reversed = forward.clone();
+        forward_reversed.reverse();
+
+        assert_eq!(forward_reversed, backward);
+    }
+
+    #[test]
+    fn test_insert_at_stress_random_positions() {
+        let mut list = XorLinkedList::new();
+
+        for i in 0..50 {
+            let pos = if list.is_empty() {
+                0
+            } else {
+                (i * 7) % list.len()
+            };
+            list.insert_at(pos, i);
+        }
+
+        let forward: Vec<_> = (&list).into_iter().cloned().collect();
+        let backward: Vec<_> = list.reverse_iter().cloned().collect();
+
+        let mut reversed_forward = forward.clone();
+        reversed_forward.reverse();
+
+        assert_eq!(reversed_forward, backward);
+    }
+
+    #[test]
+    fn test_insert_at_backward_off_by_one_detection() {
+        let mut list = XorLinkedList::new();
+
+        for i in 0..8 {
+            list.push_back(i);
+        }
+
+        list.insert_at(1, 100);
+        list.insert_at(3, 200);
+        list.insert_at(5, 300);
+
+        let idx = list.len() / 2 + 1;
+        list.insert_at(idx, 999);
+
+        assert_eq!(list[idx], 999);
+
+        assert_eq!(list[idx - 1], 300);
+        assert_eq!(list[idx + 1], 3);
+    }
+
+    #[test]
+    fn test_remove_at_ends() {
+        let mut list: XorLinkedList<i32> = XorLinkedList::new();
+        assert!(list.remove_at(0).is_none());
+        assert!(list.remove_at(1).is_none());
+        assert_eq!(0, list.len());
+
+        list.push_back(1);
+        list.push_back(2);
+        assert_eq!(1, list.remove_at(0).unwrap());
+        assert_eq!(1, list.len());
+
+        list.push_back(3);
+        assert_eq!(3, list.remove_at(1).unwrap());
+        assert_eq!(1, list.len());
+        assert_eq!(2, list[0]);
+    }
+
+    #[test]
+    fn test_remove_at_middle() {
+        let mut list: XorLinkedList<i32> = XorLinkedList::new();
+        for i in 0..10 {
+            list.push_back(i);
+        }
+
+        assert_eq!(8, list.remove_at(8).unwrap());
+        assert_eq!(9, list.len());
+
+        assert_eq!(1, list.remove_at(1).unwrap());
+        assert_eq!(8, list.len());
+
+        assert_eq!(0, list[0]);
+        assert_eq!(2, list[1]);
+        assert_eq!(3, list[2]);
+        assert_eq!(4, list[3]);
+        assert_eq!(5, list[4]);
+        assert_eq!(6, list[5]);
+        assert_eq!(7, list[6]);
+        assert_eq!(9, list[7]);
     }
 }
