@@ -22,12 +22,14 @@ struct XorNode<T> {
     xor_ptr: *mut XorNode<T>,
 }
 
+/// linked list using single XOR pointer nodes
 pub struct XorLinkedList<T> {
     size: usize,
     start: *mut XorNode<T>,
     end: *mut XorNode<T>,
 }
 impl<T> XorLinkedList<T> {
+    /// creates an empty XOR linked list
     pub fn new() -> Self {
         Self {
             size: 0,
@@ -36,67 +38,74 @@ impl<T> XorLinkedList<T> {
         }
     }
 
+    /// returns a reference of the first element if present
     pub fn peek_front(&self) -> Option<&T> {
         if self.size == 0 {
+            debug_assert!(self.start.is_null());
+            debug_assert!(self.end.is_null());
             None
         } else {
             unsafe { Some(&(*self.start).payload) }
         }
     }
 
-    pub fn peek_front_mut(&self) -> Option<&mut T> {
+    /// returns a mutable of reference the first element if present
+    pub fn peek_front_mut(&mut self) -> Option<&mut T> {
         if self.size == 0 {
+            debug_assert!(self.start.is_null());
+            debug_assert!(self.end.is_null());
             None
         } else {
             unsafe { Some(&mut (*self.start).payload) }
         }
     }
 
+    /// returns a reference of the last element if present
     pub fn peek_back(&self) -> Option<&T> {
         if self.size == 0 {
+            debug_assert!(self.start.is_null());
+            debug_assert!(self.end.is_null());
             None
         } else {
             unsafe { Some(&(*self.end).payload) }
         }
     }
 
-    pub fn peek_back_mut(&self) -> Option<&mut T> {
+    /// returns a mutable reference of the last element if present
+    pub fn peek_back_mut(&mut self) -> Option<&mut T> {
         if self.size == 0 {
+            debug_assert!(self.start.is_null());
+            debug_assert!(self.end.is_null());
             None
         } else {
             unsafe { Some(&mut (*self.end).payload) }
         }
     }
 
+    /// returns a reference the element at the index
     pub fn get(&self, index: usize) -> Option<&T> {
         if index >= self.size {
             return None;
         }
 
-        let mut prev_ptr = null_mut();
-        let (mut current_ptr, mut jump_count) = if index > self.size / 2 {
-            (self.end, self.size - index - 1)
-        } else {
-            (self.start, index)
-        };
-        while jump_count > 0 {
-            let new_ptr;
-            unsafe {
-                new_ptr = xor_next_ptr((*current_ptr).xor_ptr, prev_ptr);
-            }
-            prev_ptr = current_ptr;
-            current_ptr = new_ptr;
-            jump_count -= 1;
-        }
+        let ptr = unsafe { self.get_ptr_at(index) };
 
-        Some(unsafe { &(*current_ptr).payload })
+        Some(unsafe { &(*ptr).payload })
     }
 
+    /// returns a mutable reference the element at the index
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         if index >= self.size {
             return None;
         }
 
+        let ptr = unsafe { self.get_ptr_at(index) };
+
+        Some(unsafe { &mut (*ptr).payload })
+    }
+
+    unsafe fn get_ptr_at(&self, index: usize) -> *mut XorNode<T> {
+        debug_assert!(index < self.size);
         let mut prev_ptr = null_mut();
         let (mut current_ptr, mut jump_count) = if index > self.size / 2 {
             (self.end, self.size - index - 1)
@@ -113,11 +122,17 @@ impl<T> XorLinkedList<T> {
             jump_count -= 1;
         }
 
-        Some(unsafe { &mut (*current_ptr).payload })
+        current_ptr
     }
 
+    /// returns the number of elements
     pub fn len(&self) -> usize {
         self.size
+    }
+
+    /// returns true if the list is empty
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
     }
 
     unsafe fn push_end(end_ptr1: &mut *mut XorNode<T>, end_ptr2: &mut *mut XorNode<T>, value: T) {
@@ -139,6 +154,7 @@ impl<T> XorLinkedList<T> {
         }
     }
 
+    /// inserts an element to the end of the list
     pub fn push_back(&mut self, value: T) {
         self.size += 1;
         unsafe {
@@ -146,6 +162,7 @@ impl<T> XorLinkedList<T> {
         }
     }
 
+    /// inserts an element to the start of the list
     pub fn push_front(&mut self, value: T) {
         self.size += 1;
         unsafe {
@@ -158,19 +175,20 @@ impl<T> XorLinkedList<T> {
             debug_assert!(end_ptr2.is_null());
             return None;
         }
-        let old_start = *end_ptr1;
+        let old_ptr = *end_ptr1;
         unsafe {
             if end_ptr1 == end_ptr2 {
                 *end_ptr1 = null_mut();
                 *end_ptr2 = null_mut();
             } else {
                 *end_ptr1 = (**end_ptr1).xor_ptr;
-                (**end_ptr1).xor_ptr = xor_next_ptr((**end_ptr1).xor_ptr, old_start);
+                (**end_ptr1).xor_ptr = xor_next_ptr((**end_ptr1).xor_ptr, old_ptr);
             }
-            Some(Box::from_raw(old_start).payload)
+            Some(Box::from_raw(old_ptr).payload)
         }
     }
 
+    /// removes and returns the element from the start of the list
     pub fn pop_front(&mut self) -> Option<T> {
         unsafe {
             self.size = self.size.saturating_sub(1);
@@ -178,6 +196,7 @@ impl<T> XorLinkedList<T> {
         }
     }
 
+    /// removes and returns the element from the end of the list
     pub fn pop_back(&mut self) -> Option<T> {
         unsafe {
             self.size = self.size.saturating_sub(1);
@@ -185,10 +204,37 @@ impl<T> XorLinkedList<T> {
         }
     }
 
-    pub fn into_iter_reverse(self) -> impl Iterator<Item = T> {
+    /// returns an iterator from the end to the start of the list
+    pub fn into_reverse_iter(self) -> impl Iterator<Item = T> {
         ReverseXorLinkedListIter {
             xor_linked_list: self,
         }
+    }
+
+    /// returns an iterator of element references from the end to the start of the list
+    pub fn reverse_iter(&self) -> impl Iterator<Item = &T> {
+        RefXorLinkedListIter {
+            _xor_linked_list: self,
+            current_ptr: self.end,
+            prev_ptr: null_mut(),
+        }
+    }
+
+    /// returns an iterator of mutable element references from the end to the start of the list
+    pub fn reverse_iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        let current_ptr = self.end;
+        MutRefXorLinkedListIter {
+            _xor_linked_list: self,
+            current_ptr,
+            prev_ptr: null_mut(),
+        }
+    }
+
+    /// reverses the order of the list
+    pub fn reverse(&mut self) {
+        let new_start = self.end;
+        self.end = self.start;
+        self.start = new_start;
     }
 }
 impl<T> Extend<T> for XorLinkedList<T> {
@@ -226,7 +272,7 @@ impl<T> Default for XorLinkedList<T> {
 }
 impl<T: Debug> Debug for XorLinkedList<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.into_iter()).finish()
+        f.debug_list().entries(&*self).finish()
     }
 }
 impl<T> Drop for XorLinkedList<T> {
@@ -350,10 +396,12 @@ impl<T> Iterator for ReverseXorLinkedListIter<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
     use super::*;
 
     #[test]
-    fn test_add_iterate() {
+    fn test_push_and_iterate() {
         let mut list: XorLinkedList<i32> = XorLinkedList::new();
         list.push_front(2);
         list.push_front(1);
@@ -488,14 +536,14 @@ mod tests {
     }
 
     #[test]
-    fn test_add_reverse_iterate() {
+    fn test_into_reverse_iter() {
         let mut list: XorLinkedList<i32> = XorLinkedList::new();
         list.push_front(2);
         list.push_front(1);
         list.push_back(3);
 
         let mut items: Vec<i32> = vec![];
-        for i in list.into_iter_reverse() {
+        for i in list.into_reverse_iter() {
             items.push(i);
         }
 
@@ -563,5 +611,97 @@ mod tests {
         for (i, j) in list.into_iter().zip(cloned_list.into_iter()) {
             assert_eq!(i, j);
         }
+    }
+
+    #[test]
+    fn test_reverse_iter() {
+        let mut list: XorLinkedList<i32> = XorLinkedList::new();
+        list.push_front(3);
+        list.push_front(2);
+        list.push_front(1);
+
+        let mut iter = list.reverse_iter();
+        assert_eq!(3, *iter.next().unwrap());
+        assert_eq!(2, *iter.next().unwrap());
+        assert_eq!(1, *iter.next().unwrap());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_reverse_iter_mut() {
+        let mut list: XorLinkedList<i32> = XorLinkedList::new();
+        list.push_front(3);
+        list.push_front(2);
+        list.push_front(1);
+
+        let mut iter = list.reverse_iter_mut();
+        *iter.next().unwrap() += 300;
+        *iter.next().unwrap() += 200;
+        *iter.next().unwrap() += 100;
+        assert!(iter.next().is_none());
+        drop(iter);
+
+        assert_eq!(101, list[0]);
+        assert_eq!(202, list[1]);
+        assert_eq!(303, list[2]);
+    }
+
+    #[test]
+    fn test_extend() {
+        let mut list1: XorLinkedList<i32> = XorLinkedList::new();
+        list1.push_front(3);
+        list1.push_front(2);
+        list1.push_front(1);
+
+        let mut list2: XorLinkedList<i32> = XorLinkedList::new();
+        list2.push_front(5);
+        list2.push_front(4);
+
+        list1.extend(list2);
+
+        assert_eq!(5, list1.len());
+        assert_eq!(1, list1[0]);
+        assert_eq!(2, list1[1]);
+        assert_eq!(3, list1[2]);
+        assert_eq!(4, list1[3]);
+        assert_eq!(5, list1[4]);
+    }
+
+    #[test]
+    fn test_drop() {
+        const EXPECTED_DROP_COUNT: i32 = 5;
+        let drop_counter = Rc::new(RefCell::new(0));
+        struct DropImpl {
+            drop_counter: Rc<RefCell<i32>>,
+        }
+        impl Drop for DropImpl {
+            fn drop(&mut self) {
+                *self.drop_counter.borrow_mut() += 1;
+            }
+        }
+
+        let mut list = XorLinkedList::new();
+        for _ in 0..EXPECTED_DROP_COUNT {
+            list.push_back(DropImpl {
+                drop_counter: drop_counter.clone(),
+            });
+        }
+        drop(list);
+
+        assert_eq!(EXPECTED_DROP_COUNT, *drop_counter.borrow());
+    }
+
+    #[test]
+    fn test_reverse() {
+        let mut list: XorLinkedList<i32> = XorLinkedList::new();
+        list.push_front(3);
+        list.push_front(2);
+        list.push_front(1);
+
+        list.reverse();
+
+        assert_eq!(3, list[0]);
+        assert_eq!(2, list[1]);
+        assert_eq!(1, list[2]);
     }
 }
