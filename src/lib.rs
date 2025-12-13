@@ -1,5 +1,6 @@
 use std::{
     fmt::Debug,
+    marker::PhantomData,
     mem::swap,
     ops::{Index, IndexMut},
     ptr::null_mut,
@@ -42,6 +43,15 @@ impl<T> XorLinkedList<T> {
             size: 0,
             start: null_mut(),
             end: null_mut(),
+        }
+    }
+
+    /// removes all elements from the list
+    pub fn clear(&mut self) {
+        loop {
+            if self.pop_front().is_none() {
+                return;
+            }
         }
     }
 
@@ -111,6 +121,7 @@ impl<T> XorLinkedList<T> {
         Some(unsafe { &mut (*ptr).payload })
     }
 
+    #[inline]
     unsafe fn get_ptr_at(&self, index: usize) -> *mut XorNode<T> {
         debug_assert!(index < self.size);
         let mut prev_ptr = null_mut();
@@ -142,6 +153,7 @@ impl<T> XorLinkedList<T> {
         self.size == 0
     }
 
+    #[inline]
     unsafe fn push_end(end_ptr1: &mut *mut XorNode<T>, end_ptr2: &mut *mut XorNode<T>, value: T) {
         let new_node = XorNode::allocate(value);
 
@@ -174,9 +186,15 @@ impl<T> XorLinkedList<T> {
         }
     }
 
-    unsafe fn pop_end(end_ptr1: &mut *mut XorNode<T>, end_ptr2: &mut *mut XorNode<T>) -> Option<T> {
+    #[inline]
+    unsafe fn pop_end(
+        size: &mut usize,
+        end_ptr1: &mut *mut XorNode<T>,
+        end_ptr2: &mut *mut XorNode<T>,
+    ) -> Option<T> {
         if end_ptr1.is_null() {
             debug_assert!(end_ptr2.is_null());
+            debug_assert_eq!(0, *size);
             return None;
         }
         let old_ptr = *end_ptr1;
@@ -188,24 +206,20 @@ impl<T> XorLinkedList<T> {
                 *end_ptr1 = (**end_ptr1).xor_ptr;
                 (**end_ptr1).xor_ptr = xor_ptrs((**end_ptr1).xor_ptr, old_ptr);
             }
+
+            *size -= 1;
             Some(Box::from_raw(old_ptr).payload)
         }
     }
 
     /// removes and returns the element from the start of the list
     pub fn pop_front(&mut self) -> Option<T> {
-        unsafe {
-            self.size = self.size.saturating_sub(1);
-            Self::pop_end(&mut self.start, &mut self.end)
-        }
+        unsafe { Self::pop_end(&mut self.size, &mut self.start, &mut self.end) }
     }
 
     /// removes and returns the element from the end of the list
     pub fn pop_back(&mut self) -> Option<T> {
-        unsafe {
-            self.size = self.size.saturating_sub(1);
-            Self::pop_end(&mut self.end, &mut self.start)
-        }
+        unsafe { Self::pop_end(&mut self.size, &mut self.end, &mut self.start) }
     }
 
     /// returns an iterator from the end to the start of the list
@@ -218,7 +232,7 @@ impl<T> XorLinkedList<T> {
     /// returns an iterator of element references from the end to the start of the list
     pub fn reverse_iter(&self) -> impl Iterator<Item = &T> {
         RefXorLinkedListIter {
-            _xor_linked_list: self,
+            xor_linked_list_lifetime: PhantomData,
             current_ptr: self.end,
             prev_ptr: null_mut(),
         }
@@ -228,7 +242,7 @@ impl<T> XorLinkedList<T> {
     pub fn reverse_iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         let current_ptr = self.end;
         MutRefXorLinkedListIter {
-            _xor_linked_list: self,
+            xor_linked_list_lifetime: PhantomData,
             current_ptr,
             prev_ptr: null_mut(),
         }
@@ -240,6 +254,7 @@ impl<T> XorLinkedList<T> {
     }
 
     /// returns a tuple of the pointers at index and index-1, where 0 < index < size-1
+    #[inline]
     unsafe fn get_ptr_at_and_prev(&mut self, index: usize) -> (*mut XorNode<T>, *mut XorNode<T>) {
         let mut prev_ptr = null_mut();
         let is_backwards_iteration = index > self.size / 2;
@@ -267,7 +282,11 @@ impl<T> XorLinkedList<T> {
 
     /// inserts an element at the index
     pub fn insert_at(&mut self, index: usize, value: T) {
-        assert!(index <= self.size);
+        assert!(
+            index <= self.size,
+            "Index is greater than the size {}",
+            self.size
+        );
         if index == 0 {
             self.push_front(value);
         } else if index == self.size {
@@ -352,11 +371,7 @@ impl<T: Debug> Debug for XorLinkedList<T> {
 }
 impl<T> Drop for XorLinkedList<T> {
     fn drop(&mut self) {
-        loop {
-            if self.pop_front().is_none() {
-                return;
-            }
-        }
+        self.clear();
     }
 }
 impl<T> IntoIterator for XorLinkedList<T> {
@@ -379,7 +394,7 @@ impl<'a, T> IntoIterator for &'a XorLinkedList<T> {
         let prev_ptr = null_mut();
 
         RefXorLinkedListIter {
-            _xor_linked_list: self,
+            xor_linked_list_lifetime: PhantomData,
             current_ptr,
             prev_ptr,
         }
@@ -394,7 +409,7 @@ impl<'a, T> IntoIterator for &'a mut XorLinkedList<T> {
         let prev_ptr = null_mut();
 
         MutRefXorLinkedListIter {
-            _xor_linked_list: self,
+            xor_linked_list_lifetime: PhantomData,
             current_ptr,
             prev_ptr,
         }
@@ -413,7 +428,7 @@ impl<T> Iterator for XorLinkedListIter<T> {
 }
 
 pub struct RefXorLinkedListIter<'a, T> {
-    _xor_linked_list: &'a XorLinkedList<T>,
+    xor_linked_list_lifetime: PhantomData<&'a XorLinkedList<T>>,
     current_ptr: *mut XorNode<T>,
     prev_ptr: *mut XorNode<T>,
 }
@@ -436,7 +451,7 @@ impl<'a, T> Iterator for RefXorLinkedListIter<'a, T> {
 }
 
 pub struct MutRefXorLinkedListIter<'a, T> {
-    _xor_linked_list: &'a mut XorLinkedList<T>,
+    xor_linked_list_lifetime: PhantomData<&'a mut XorLinkedList<T>>,
     current_ptr: *mut XorNode<T>,
     prev_ptr: *mut XorNode<T>,
 }
@@ -939,5 +954,20 @@ mod tests {
         assert_eq!(6, list[5]);
         assert_eq!(7, list[6]);
         assert_eq!(9, list[7]);
+    }
+
+    #[test]
+    fn test_clear() {
+        let mut list = XorLinkedList::new();
+        list.clear();
+        assert_eq!(0, list.size);
+
+        list.push_back(1);
+        list.push_back(2);
+        list.push_back(3);
+
+        list.clear();
+        assert_eq!(0, list.size);
+        assert!(list.peek_back().is_none());
     }
 }
