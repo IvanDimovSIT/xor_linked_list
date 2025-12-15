@@ -1,10 +1,14 @@
 use std::{
     fmt::Debug,
+    hash::Hash,
     marker::PhantomData,
     mem::swap,
     ops::{Index, IndexMut},
     ptr::null_mut,
 };
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 const INDEX_BOUNDS_ERROR: &str = "Index is out of bounds";
 
@@ -222,6 +226,16 @@ impl<T> XorLinkedList<T> {
         unsafe { Self::pop_end(&mut self.size, &mut self.end, &mut self.start) }
     }
 
+    /// returns an iterator of element references from the start to the end of the list
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.into_iter()
+    }
+
+    /// returns an iterator of mutable element references from the start to the end of the list
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.into_iter()
+    }
+
     /// returns an iterator from the end to the start of the list
     pub fn into_reverse_iter(self) -> impl Iterator<Item = T> {
         ReverseXorLinkedListIter {
@@ -331,6 +345,20 @@ impl<T> XorLinkedList<T> {
         }
     }
 }
+impl<T: PartialEq> PartialEq for XorLinkedList<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().zip(other.iter()).all(|(a, b)| a == b)
+    }
+}
+impl<T: Eq> Eq for XorLinkedList<T> {}
+impl<T: Hash> Hash for XorLinkedList<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.len().hash(state);
+        for element in self {
+            element.hash(state);
+        }
+    }
+}
 impl<T> Extend<T> for XorLinkedList<T> {
     fn extend<A: IntoIterator<Item = T>>(&mut self, iter: A) {
         for element in iter {
@@ -413,6 +441,29 @@ impl<'a, T> IntoIterator for &'a mut XorLinkedList<T> {
             current_ptr,
             prev_ptr,
         }
+    }
+}
+impl<T> FromIterator<T> for XorLinkedList<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut list = XorLinkedList::new();
+        for element in iter {
+            list.push_back(element);
+        }
+
+        list
+    }
+}
+#[cfg(feature = "serde")]
+impl<T: Serialize> Serialize for XorLinkedList<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.iter())
+    }
+}
+#[cfg(feature = "serde")]
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for XorLinkedList<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let vec = Vec::<T>::deserialize(deserializer)?;
+        Ok(vec.into_iter().collect())
     }
 }
 
@@ -969,5 +1020,48 @@ mod tests {
         list.clear();
         assert_eq!(0, list.size);
         assert!(list.peek_back().is_none());
+    }
+
+    #[test]
+    fn test_equals() {
+        let mut list1 = XorLinkedList::new();
+        list1.push_back(1);
+        list1.push_back(2);
+        let mut list2 = list1.clone();
+        assert_eq!(list1, list2);
+
+        list2.push_back(3);
+        assert_ne!(list1, list2);
+
+        list1.push_back(3);
+        assert_eq!(list1, list2);
+
+        list1[1] = 5;
+        assert_ne!(list1, list2);
+    }
+
+    #[test]
+    fn test_from_iterator() {
+        let list = XorLinkedList::from_iter([1, 2, 3].into_iter());
+
+        assert_eq!(3, list.len());
+        assert_eq!(1, list[0]);
+        assert_eq!(2, list[1]);
+        assert_eq!(3, list[2]);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_serde() {
+        let mut list = XorLinkedList::new();
+        list.push_back(1);
+        list.push_back(2);
+        list.push_back(3);
+
+        let serialized = serde_json::to_string(&list).unwrap();
+
+        let deserialized: XorLinkedList<i32> = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(list, deserialized);
     }
 }
